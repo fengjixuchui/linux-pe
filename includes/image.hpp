@@ -8,12 +8,12 @@
 #include "dir_import.hpp"
 #include "dir_relocs.hpp"
 #include "dir_tls.hpp"
+#include "dir_load_config.hpp"
+#include "dir_resource.hpp"
 
 // TODO:
-// - Implement load configuration, security and resource directories
-// - Add helpers for each directory
-// - Test each directory
-
+// - Implement security directory
+// - Implement parsing helpers
 namespace win
 {
 	// Image wrapper
@@ -68,7 +68,7 @@ namespace win
 		inline T* rva_to_ptr( uint32_t rva )
 		{
 			auto nt_hdrs = get_nt_headers();
-			if ( nt_hdrs->optional_header.size_image <= rva ) return nullptr;
+			if ( !rva || nt_hdrs->optional_header.size_image <= rva ) return nullptr;
 			
 			uint8_t* output = rva + ( uint8_t* ) &dos_header;
 			for ( int i = 0; i < nt_hdrs->file_header.num_sections; i++ )

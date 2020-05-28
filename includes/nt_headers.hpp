@@ -1,9 +1,6 @@
 #pragma once
 #include "common.hpp"
 
-// TODO:
-// - Implement rva_t and add bunch of helpers
-
 #pragma pack(push, WIN_STRUCT_PACKING)
 namespace win
 {
@@ -190,22 +187,22 @@ namespace win
 	//
 	union version_t
 	{
+		uint16_t					identifier;
 		struct
 		{
 			uint8_t					major;
 			uint8_t					minor;
 		};
-		uint16_t					identifier;
 	};
 
 	union ex_version_t
 	{
+		uint32_t					identifier;
 		struct
 		{
 			uint16_t				major;
 			uint16_t				minor;
 		};
-		uint32_t					identifier;
 	};
 
 	// File header
