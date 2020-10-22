@@ -1,12 +1,73 @@
+// Copyright (c) 2020 Can Boluk
+// All rights reserved.   
+//    
+// Redistribution and use in source and binary forms, with or without   
+// modification, are permitted provided that the following conditions are met: 
+//    
+// 1. Redistributions of source code must retain the above copyright notice,   
+//    this list of conditions and the following disclaimer.   
+// 2. Redistributions in binary form must reproduce the above copyright   
+//    notice, this list of conditions and the following disclaimer in the   
+//    documentation and/or other materials provided with the distribution.   
+// 3. Neither the name of the copyright holder nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
+//    
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE  
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE   
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR   
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF   
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS   
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN   
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)   
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE  
+// POSSIBILITY OF SUCH DAMAGE.        
+//
 #pragma once
-#include "nt_headers.hpp"
+#include "common.hpp"
 #include "dir_relocs.hpp"
 
 #pragma pack(push, WIN_STRUCT_PACKING)
 namespace win
 {
-    // TODO:
-    // - Implement enclave configuration
+    // Enclave configuration
+    //
+    struct enclave_config_x64_t
+    {
+        uint32_t                    size;
+        uint32_t                    minimum_required_config_size;
+        uint32_t                    policy_flags;
+        uint32_t                    number_of_imports;
+        uint32_t                    import_list;
+        uint32_t                    import_entry_size;
+        uint8_t                     family_id[ 16 ];
+        uint8_t                     image_id[ 16 ];
+        uint32_t                    image_version;
+        uint32_t                    security_version;
+        uint64_t                    enclave_size;
+        uint32_t                    number_of_threads;
+        uint32_t                    enclave_flags;
+    };
+    struct enclave_config_x86_t
+    {
+        uint32_t                    size;
+        uint32_t                    minimum_required_config_size;
+        uint32_t                    policy_flags;
+        uint32_t                    number_of_imports;
+        uint32_t                    import_list;
+        uint32_t                    import_entry_size;
+        uint8_t                     family_id[ 16 ];
+        uint8_t                     image_id[ 16 ];
+        uint32_t                    image_version;
+        uint32_t                    security_version;
+        uint32_t                    enclave_size;
+        uint32_t                    number_of_threads;
+        uint32_t                    enclave_flags;
+    };
+    template<bool x64 = default_architecture>
+    using enclave_config_t = std::conditional_t<x64, enclave_config_x64_t, enclave_config_x86_t>;
 
     // Dynamic relocations
     //
@@ -22,7 +83,7 @@ namespace win
     struct dynamic_reloc_guard_rf_prologue_t
     {
         uint8_t                     prologue_size;
-        uint8_t                     prologue_bytes[ 1 ];                // Variable length array
+        uint8_t                     prologue_bytes[ VAR_LEN ];
     };
 
     struct dynamic_reloc_guard_rf_epilogue_t
@@ -31,9 +92,10 @@ namespace win
         uint8_t                     epilogue_size;
         uint8_t                     branch_descriptor_element_size;
         uint16_t                    branch_descriptor_count;
-        uint8_t                     branch_descriptors[ 1 ];            // Variable length array
+        uint8_t                     branch_descriptors[ VAR_LEN ];
 
         inline uint8_t* get_branch_descriptor_bit_map() { return branch_descriptors + branch_descriptor_count * branch_descriptor_element_size; }
+        inline const uint8_t* get_branch_descriptor_bit_map() const { return const_cast< dynamic_reloc_guard_rf_epilogue_t* >( this )->get_branch_descriptor_bit_map(); }
     };
 
     struct dynamic_reloc_import_control_transfer_t
@@ -62,14 +124,14 @@ namespace win
     {
         uint32_t                    symbol;
         uint32_t                    size;
-        reloc_block_t               blocks[ 1 ];                        // Variable length array
+        reloc_block_t               first_block;
     };
 
     struct dynamic_reloc_x64_t
     {
         uint64_t                    symbol;
         uint32_t                    size;
-        reloc_block_t               blocks[ 1 ];                        // Variable length array
+        reloc_block_t               first_block;
     };
 
     struct dynamic_reloc_v2_x86_t
@@ -79,7 +141,7 @@ namespace win
         uint32_t                    symbol;
         uint32_t                    symbol_group;
         uint32_t                    flags;
-        uint8_t                     fixup_info[ 1 ];                    // Variable length array
+        uint8_t                     fixup_info[ VAR_LEN ];
     };
 
     struct dynamic_reloc_v2_x64_t
@@ -89,15 +151,28 @@ namespace win
         uint64_t                    symbol;
         uint32_t                    symbol_group;
         uint32_t                    flags;
-        uint8_t                     fixup_info[ 1 ];                    // Variable length array
+        uint8_t                     fixup_info[ VAR_LEN ];
     };
+    template<bool x64 = default_architecture>
+    using dynamic_reloc_t =    std::conditional_t<x64, dynamic_reloc_x64_t, dynamic_reloc_x86_t>;
+    template<bool x64 = default_architecture>
+    using dynamic_reloc_v2_t = std::conditional_t<x64, dynamic_reloc_v2_x64_t, dynamic_reloc_v2_x86_t>;
 
+    // Dynamic relocation table
+    //
+    template<bool x64 = default_architecture>
     struct dynamic_reloc_table_t
     {
         uint32_t                    version;
         uint32_t                    size;
-        template<typename T> inline T* get_relocs() { return ( T* ) ( this + 1 ); }
+        union
+        {
+            dynamic_reloc_t<x64>    first_entry; // Variable length array.
+            dynamic_reloc_v2_t<x64> first_v2_entry; // Variable length array.
+        };
     };
+    using dynamic_reloc_table_x86_t = dynamic_reloc_table_t<false>;
+    using dynamic_reloc_table_x64_t = dynamic_reloc_table_t<true>;
 
     // Hot patch information
     //
@@ -183,6 +258,8 @@ namespace win
         uint32_t                    _pad1;
         uint64_t                    enclave_configuration_ptr;
         uint64_t                    volatile_metadata_ptr;
+        uint64_t                    guard_eh_continuation_table;
+        uint64_t                    guard_eh_continuation_table_count;
     };
 
     struct load_config_directory_x86_t
@@ -208,11 +285,7 @@ namespace win
         uint32_t                    se_handler_count;
     };
 
-    template<bool x64 = IS_DEF_AMD64,
-        typename base_type = typename std::conditional<x64, load_config_directory_x64_t, load_config_directory_x86_t>::type>
-        struct load_config_directory_t : base_type {};
-    static_assert( sizeof( load_config_directory_t<false> ) == sizeof( load_config_directory_x86_t ) &&
-                   sizeof( load_config_directory_t<true> ) == sizeof( load_config_directory_x64_t ),
-                   "Empty structure influenced structure size." );
+    template<bool x64 = default_architecture>
+    using load_config_directory_t = std::conditional_t<x64, load_config_directory_x64_t, load_config_directory_x86_t>;
 };
 #pragma pack(pop)

@@ -1,6 +1,33 @@
+// Copyright (c) 2020 Can Boluk
+// All rights reserved.   
+//    
+// Redistribution and use in source and binary forms, with or without   
+// modification, are permitted provided that the following conditions are met: 
+//    
+// 1. Redistributions of source code must retain the above copyright notice,   
+//    this list of conditions and the following disclaimer.   
+// 2. Redistributions in binary form must reproduce the above copyright   
+//    notice, this list of conditions and the following disclaimer in the   
+//    documentation and/or other materials provided with the distribution.   
+// 3. Neither the name of the copyright holder nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
+//    
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE  
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE   
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR   
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF   
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS   
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN   
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)   
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE  
+// POSSIBILITY OF SUCH DAMAGE.        
+//
 #pragma once
+#include "common.hpp"
 #include "nt_headers.hpp"
-
 #include "dir_debug.hpp"
 #include "dir_exceptions.hpp"
 #include "dir_export.hpp"
@@ -10,80 +37,105 @@
 #include "dir_tls.hpp"
 #include "dir_load_config.hpp"
 #include "dir_resource.hpp"
+#include "dir_security.hpp"
+#include "dir_delay_load.hpp"
 
-// TODO:
-// - Implement security directory
-// - Implement parsing helpers
+
 namespace win
 {
-	// Image wrapper
-	//
-	template<bool x64 = IS_DEF_AMD64>
-	struct image_t
-	{
-		dos_header_t				dos_header;
-		
-		inline operator dos_header_t&() { return dos_header; }
-		inline dos_header_t& get_dos_headers() { return &dos_header; }
+    // Image wrapper
+    //
+    template<bool x64 = default_architecture>
+    struct image_t
+    {
+        dos_header_t                dos_header;
+        
+        // Basic getters.
+        //
+        inline dos_header_t* get_dos_headers() { return &dos_header; }
+        inline const dos_header_t* get_dos_headers() const { return &dos_header; }
+        inline file_header_t* get_file_header() { return dos_header.get_file_header(); }
+        inline const file_header_t* get_file_header() const { return dos_header.get_file_header(); }
+        inline nt_headers_t<x64>* get_nt_headers() { return dos_header.get_nt_headers<x64>(); }
+        inline const nt_headers_t<x64>* get_nt_headers() const { return dos_header.get_nt_headers<x64>(); }
 
-		inline nt_headers_t<x64>* get_nt_headers() { return dos_header.get_nt_headers<x64>(); }
+        // Calculation of optional header checksum.
+        //
+        inline uint32_t compute_checksum( uint32_t file_len ) const
+        {
+            // Sum over each word.
+            //
+            uint32_t chksum = 0;
+            const uint16_t* wdata = ( const uint16_t* ) this;
+            for ( size_t n = 0; n != file_len / 2; n++ )
+            {
+                uint32_t sum = wdata[ n ] + chksum;
+                chksum = ( uint16_t ) sum + ( sum >> 16 );
+            }
 
-		inline uint32_t compete_checksum( uint32_t file_len )
-		{
-			// Calculate partial sum
-			uint32_t psum_tmp = 0;
-			uint16_t* raw_data = ( uint16_t* ) &dos_header;
-			for ( uint32_t off = 0; off < ( file_len + 1 ) >> 1; off++ )
-			{
-				// Add uint16_t
-				psum_tmp += raw_data[ off ];
-				// If it overflows, increment by one
-				psum_tmp = ( psum_tmp >> 16 ) + ( psum_tmp & 0xFFFF );
-			}
-			uint16_t partial_sum = psum_tmp;
+            // If there's a byte left append it.
+            //
+            uint16_t presult = chksum + ( chksum >> 16 );
+            if ( file_len & 1 )
+                presult += *( ( ( const char* ) this ) + file_len - 1 );
 
-			// Adjust for the previous .checkum field (=0)
-			uint16_t* adjust_sum = ( uint16_t* ) &get_nt_headers()->optional_header.checksum;
-			for ( int i = 0; i < 2; i++ )
-			{
-				// If it underflows, decrement by one
-				partial_sum -= partial_sum < adjust_sum[ i ];
-				// Substract uint16_t
-				partial_sum -= adjust_sum[ i ];
-			}
+            // Adjust for the previous .checkum field (=0)
+            //
+            uint16_t* adjust_sum = ( uint16_t* ) &get_nt_headers()->optional_header.checksum;
+            for ( size_t i = 0; i != 2; i++ )
+            {
+                presult -= presult < adjust_sum[ i ];
+                presult -= adjust_sum[ i ];
+            }
+            return presult + file_len;
+        }
+        inline void update_checksum( uint32_t file_len )
+        {
+            get_nt_headers()->optional_header.checksum = compute_checksum( file_len );
+        }
 
-			// Return result
-			return ( uint32_t ) partial_sum + file_len;
-		}
+        // Directory getter
+        //
+        inline data_directory_t* get_directory( directory_id id )
+        {
+            auto nt_hdrs = get_nt_headers();
+            if ( nt_hdrs->optional_header.num_data_directories <= id ) return nullptr;
+            data_directory_t* dir = &nt_hdrs->optional_header.data_directories.entries[ id ];
+            return dir->present() ? dir : nullptr;
+        }
+        inline const data_directory_t* get_directory( directory_id id ) const { const_cast< image_t* >( this )->get_directory( id ); }
 
-		inline data_directory_t* get_directory( directory_id id )
-		{
-			auto nt_hdrs = get_nt_headers();
-			if ( nt_hdrs->optional_header.num_data_directories <= id ) return nullptr;
-			data_directory_t* dir = &nt_hdrs->optional_header.data_directories.entries[ id ];
-			return dir->present() ? dir : nullptr;
-		}
+        // RVA to section mapping
+        //
+        inline section_header_t* rva_to_section( uint32_t rva )
+        {
+            auto nt_hdrs = get_nt_headers();
+            for ( size_t i = 0; i != nt_hdrs->file_header.num_sections; i++ )
+            {
+                auto section = nt_hdrs->get_section( i );
+                if ( section->virtual_address <= rva && rva < ( section->virtual_address + section->virtual_size ) )
+                    return section;
+            }
+            return nullptr;
+        }
+        inline const section_header_t* rva_to_section( uint32_t rva ) const { const_cast< image_t* >( this )->rva_to_section( rva ); }
 
-		template<typename T = void>
-		inline T* rva_to_ptr( uint32_t rva )
-		{
-			auto nt_hdrs = get_nt_headers();
-			if ( !rva || nt_hdrs->optional_header.size_image <= rva ) return nullptr;
-			
-			uint8_t* output = rva + ( uint8_t* ) &dos_header;
-			for ( int i = 0; i < nt_hdrs->file_header.num_sections; i++ )
-			{
-				auto section = nt_hdrs->get_section( i );
-				if ( section->virtual_address <= rva && rva < ( section->virtual_address + section->virtual_size ) )
-				{
-					output = output - section->virtual_address + section->ptr_raw_data;
-					break;
-				}
-			}
+        // RVA to raw offset mapping
+        //
+        template<typename T = void>
+        inline T* rva_to_ptr( uint32_t rva )
+        {
+            auto scn = rva_to_section( rva );
+            if ( !scn ) return nullptr;
 
-			return ( T* ) output;
-		}
-	};
-	using image_x64_t = image_t<true>;
-	using image_x86_t = image_t<false>;
+            size_t offset = rva - scn->virtual_address;
+            if ( offset >= scn->size_raw_data ) return nullptr;
+
+            return ( T* ) ( ( uint8_t* ) &dos_header + scn->ptr_raw_data + offset );
+        }
+        template<typename T = void>
+        inline const T* rva_to_ptr( uint32_t rva ) const { const_cast< image_t* >( this )->template rva_to_ptr<const T>( rva ); }
+    };
+    using image_x64_t = image_t<true>;
+    using image_x86_t = image_t<false>;
 };
