@@ -26,7 +26,7 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #pragma once
-#include "common.hpp"
+#include "../img_common.hpp"
 
 #pragma pack(push, WIN_STRUCT_PACKING)
 namespace win
@@ -107,5 +107,11 @@ namespace win
         uint16_t                 size_optional_header;
         file_characteristics_t   characteristics;
     };
+};
+namespace coff 
+{ 
+    using machine_id =                win::machine_id;
+    using file_header_t =             win::file_header_t; 
+    using file_characteristics_t =    win::file_characteristics_t;
 };
 #pragma pack(pop)

@@ -26,25 +26,51 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #pragma once
-#include "common.hpp"
+#include "../../img_common.hpp"
+#include "../data_directories.hpp"
 
 #pragma pack(push, WIN_STRUCT_PACKING)
 namespace win
 {
-    enum class certificate_type_id : uint16_t
+    enum class reloc_type_id : uint16_t
     {
-        x509 =             0x0001,
-        pkcs_signed_data = 0x0002,
-        reserved_1 =       0x0003,
-        ts_stack_signed =  0x0004,
+        rel_based_absolute =          0,
+        rel_based_high =              1,
+        rel_based_low =               2,
+        rel_based_high_low =          3,
+        rel_based_high_adj =          4,
+        rel_based_ia64_imm64 =        9,
+        rel_based_dir64 =             10,
     };
 
-    struct security_directory_t
+    struct reloc_entry_t
     {
-        uint32_t             length;
-        version_t            revision;
-        certificate_type_id  certificate_type;
-        uint8_t              raw_data[ VAR_LEN ];
+        uint16_t                    offset  : 12;
+        reloc_type_id               type    : 4;
     };
+    static_assert( sizeof( reloc_entry_t ) == 2, "Enum bitfield is not supported." );
+
+    struct reloc_block_t
+    {
+        uint32_t                    base_rva;
+        uint32_t                    size_block;
+        reloc_entry_t               entries[ VAR_LEN ];
+
+        inline reloc_block_t* next() { return ( reloc_block_t* ) ( ( char* ) this + this->size_block ); }
+        inline const reloc_block_t* next() const { return const_cast< reloc_block_t* >( this )->next(); }
+        inline size_t num_entries() const { return ( reloc_entry_t* ) next() - &entries[ 0 ]; }
+
+        inline reloc_entry_t* begin() { return &entries[ 0 ]; }
+        inline const reloc_entry_t* begin() const { return &entries[ 0 ]; }
+        inline reloc_entry_t* end() { return ( reloc_entry_t* ) next(); }
+        inline const reloc_entry_t* end() const { return ( const reloc_entry_t* ) next(); }
+    };
+
+    struct reloc_directory_t
+    {
+        reloc_block_t               first_block;
+    };
+
+    template<bool x64> struct directory_type<directory_id::directory_entry_basereloc, x64, void> { using type = reloc_directory_t; };
 };
 #pragma pack(pop)

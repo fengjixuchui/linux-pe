@@ -26,31 +26,32 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #pragma once
-#include "common.hpp"
+#include "../../img_common.hpp"
+#include "../symbol.hpp"
 
-#pragma pack(push, WIN_STRUCT_PACKING)
-namespace win
+#pragma pack(push, COFF_STRUCT_PACKING)
+namespace coff
 {
-    union delay_load_attributes_t
+    // Declare the data type.
+    //
+    struct aux_function_delimiter_t
     {
-        uint32_t                         flags;
-        struct                           
-        {                                
-            uint32_t                     rva_based : 1;
-            uint32_t                     reserved  : 31;
-        };
+        uint32_t                _pad0;
+        uint16_t                line_number;                // Line number
+        uint16_t                _pad1;              
+        uint32_t                _pad2;              
+        uint32_t                sym_next_bf_idx;            // Symbol table index for the next .bf index, if zero last entry.
+        uint16_t                _pad;
     };
-
-    struct delay_load_directory_t
+    static_assert( sizeof( aux_function_delimiter_t ) == sizeof( symbol_t ), "Invalid auxiliary symbol." );
+    
+    // Declare the matching logic.
+    //
+    template<>
+    inline bool symbol_t::valid_aux<aux_function_delimiter_t>() const
     {
-        delay_load_attributes_t          attributes;
-        uint32_t                         dll_name_rva;
-        uint32_t                         module_handle_rva;
-        uint32_t                         import_address_table_rva;
-        uint32_t                         import_name_table_rva;
-        uint32_t                         bound_import_address_table_rva;
-        uint32_t                         unload_information_table_rva;
-        uint32_t                         time_date_stamp;
-    };
+        return ( name.equals_s( ".bf" ) || name.equals_s( ".ef" ) ) &&
+               storage_class == storage_class_t::function_delimiter;
+    }
 };
 #pragma pack(pop)

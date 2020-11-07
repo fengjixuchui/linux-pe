@@ -26,7 +26,7 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #pragma once
-#include "common.hpp"
+#include "../img_common.hpp"
 #include "data_directories.hpp"
 
 #pragma pack(push, WIN_STRUCT_PACKING)
