@@ -17,12 +17,14 @@
     <ClInclude Include="includes\coff\auxiliaries\aux_section.hpp" />
     <ClInclude Include="includes\coff\auxiliaries\aux_weak_external.hpp" />
     <ClInclude Include="includes\coff\image.hpp" />
+    <ClInclude Include="includes\coff\import_library.hpp" />
     <ClInclude Include="includes\coff\line_number.hpp" />
     <ClInclude Include="includes\coff\reloc.hpp" />
     <ClInclude Include="includes\coff\string.hpp" />
     <ClInclude Include="includes\coff\symbol.hpp" />
     <ClInclude Include="includes\coff\file_header.hpp" />
     <ClInclude Include="includes\coff\section_header.hpp" />
+    <ClInclude Include="includes\coff\uleb128.hpp" />
     <ClInclude Include="includes\img_common.hpp" />
     <ClInclude Include="includes\linuxpe" />
     <ClInclude Include="includes\nt\data_directories.hpp" />
@@ -54,7 +56,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>Utility</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v142</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>

@@ -32,6 +32,7 @@
 #include <cstring>
 #include <stdlib.h>
 #include <type_traits>
+#include <unordered_map>
 #include "../img_common.hpp"
 
 #pragma pack(push, COFF_STRUCT_PACKING)
@@ -53,22 +54,41 @@ namespace ar
 		//
 		string_integer( uint64_t integer )
 		{
+			// Handle zero:
+			//
+			if ( !integer )
+			{
+				string[ 0 ] = '0';
+				memset( string + 1, ' ', N - 1 );
+				return;
+			}
+			
+			// Until all characters are written:
+			//
 			static constexpr char dictionary[] = "0123456789ABCDEF";
 			char* it = std::end( string );
-			if ( !integer ) *--it = '0';
 			while ( integer )
 			{
 				*--it = dictionary[ integer % B ];
 				integer /= B;
+
+				// Overflow, malformed.
+				//
 				if ( it == std::begin( string ) )
-					throw std::overflow_error( "Integer does not fit." );
+				{
+					it = std::end( string );
+					break;
+				}
 			}
 
-			size_t len = std::end( string ) - it;
+			// Move to leftmost and right pad with spaces.
+			//
+			size_t len = ( size_t ) ( std::end( string ) - it );
 			memmove( string, it, len );
 			memset( string + len, ' ', N - len );
 		}
-		string_integer( const string_integer& o ) = default;
+		string_integer( const string_integer& ) = default;
+		string_integer& operator=( const string_integer& ) = default;
 
 		// String to integer.
 		//
@@ -80,6 +100,29 @@ namespace ar
 			return strtoull( string, &it, B );
 		}
 		operator uint64_t() const { return get(); }
+	};
+
+	// Big endian integers.
+	//
+	template<typename T>
+	struct big_endian_t
+	{
+		uint8_t bytes[ sizeof( T ) ];
+
+		big_endian_t( T val )
+		{
+			for( size_t i = 0; i != sizeof( T ); i++ )
+				bytes[ sizeof( T ) - ( i + 1 ) ] = ( val >> ( 8 * i ) ) & 0xFF;
+		}
+
+		T get() const
+		{
+			T value = 0;
+			for ( size_t i = 0; i != sizeof( T ); i++ )
+				value |= bytes[ sizeof( T ) - ( i + 1 ) ] << ( 8 * i );
+			return value;
+		}
+		operator T() const { return get(); }
 	};
 
 	// File entry.
@@ -128,7 +171,7 @@ namespace ar
 		{
 			const char* begin = std::begin( identifier );
 			const char* end = std::end( identifier );
-			char terminator = '//';
+			char terminator = '/';
 
 			if ( has_long_name() )
 			{
@@ -139,7 +182,8 @@ namespace ar
 			}
 
 			auto it = begin;
-			while ( it != end && *it != terminator ) it++;
+			while ( it != end && *it != terminator && *it ) it++;
+			if ( it != begin && it[ -1 ] == '/' ) --it;
 			return { begin, ( size_t ) ( it - begin ) };
 		}
 	};
@@ -154,7 +198,7 @@ namespace ar
 
 	// Archive view wrapping the AR format.
 	//
-	template<bool constant>
+	template<bool constant = true>
 	struct view
 	{
 		// Typedefs.
@@ -197,10 +241,11 @@ namespace ar
 			}
 			bool operator!=( const iterator& other ) const { return !operator==( other ); }
 
-			// Implement iterator interface.
+			// Implement iterator interface and the name helper.
 			//
-			inline reference operator*() const { return reference{ at->to_string( str_table ), *at }; }
-			inline entry_type* operator->() const { return at; }
+			std::string_view to_string() const { return at->to_string( str_table ); }
+			reference operator*() const { return reference{ to_string(), *at }; }
+			entry_type* operator->() const { return at; }
 		};
 		using const_iterator = iterator;
 
@@ -243,11 +288,60 @@ namespace ar
 				}
 			}
 		}
+		view( view&& ) noexcept = default;
+		view( const view& ) = default;
+		view& operator=( view&& ) noexcept = default;
+		view& operator=( const view& ) = default;
 
 		// Make iterable.
 		//
-		iterator begin( bool long_strings = true ) const { return { string_table, first_entry, limit }; }
+		iterator begin() const { return { string_table, first_entry, limit }; }
 		iterator end() const { return { nullptr, nullptr, nullptr }; }
+
+		// Parser for the System V symbol table.
+		//
+		std::unordered_multimap<std::string_view, iterator> read_symbols() const
+		{
+			// Get the table descriptor.
+			//
+			if ( symbol_tables.empty() ) return {};
+			auto* table = symbol_tables.front();
+			const uint8_t* it = table->begin();
+			const uint8_t* end = table->end();
+
+			// Read entry count.
+			//
+			if ( ( it + 4 ) > end ) return {};
+			uint32_t entry_count = *( const big_endian_t<uint32_t>* ) it;
+			it += 4;
+
+			// Reference the offset table.
+			//
+			if ( ( it + 4 * entry_count ) > end ) return {};
+			const big_endian_t<uint32_t>* offsets = ( const big_endian_t<uint32_t>* ) it;
+			it += 4 * entry_count;
+
+			// Read the entries one by one.
+			//
+			std::unordered_multimap<std::string_view, iterator> entries;
+			for ( size_t n = 0; n != entry_count; n++ )
+			{
+				// Read a zero-terminated string.
+				//
+				const uint8_t* str_begin = it;
+				while ( it != end && *it ) it++;
+				if ( it == end ) return {}; // Malformed entry.
+				std::string_view string{ ( const char* ) str_begin, ( size_t ) ( it++ - str_begin ) };
+
+				// Read the entry.
+				//
+				entry_type* entry = ( entry_type* ) ( ( uint8_t* ) archive + offsets[ n ].get() );
+				if ( entry >= limit || entry->terminator != entry_terminator ) return {}; // Malformed entry.
+				iterator entry_iterator = { string_table, entry, limit };
+				entries.emplace( std::move( string ), std::move( entry_iterator ) );
+			}
+			return entries;
+		}
 	};
 	template<typename T> view( T*, size_t ) -> view<std::is_const_v<T>>;
 };
