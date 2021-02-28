@@ -27,6 +27,9 @@
 //
 #pragma once
 #include <xmmintrin.h>
+#include <algorithm>
+#include <map>
+#include <cstring>
 #include "../../img_common.hpp"
 #include "../data_directories.hpp"
 
@@ -48,6 +51,7 @@ namespace win
         save_xmm128 =               0x8,   // info == XMM reg number, offset in next slot
         save_xmm128_far =           0x9,   // info == XMM reg number, offset in next 2 slots
         push_machframe =            0xa,   // info == 0: no error-code, 1: error-code
+        maximum
     };
 
     // Unwind register identifiers.
@@ -179,6 +183,8 @@ namespace win
             using rmemcpy_t =       bool(*)( void* ctx, void* dst, uint64_t src, size_t n );
             using wmemcpy_t =       bool(*)( void* ctx, uint64_t dst, const void* src, size_t n );
             
+            // Provided by the user.
+            //
 			uint8_t                 frame_offset = 0;      // Information from the function entry.
             win::unwind_register_id frame_register = {};   //
             void*                   context =     nullptr; // User-defined context.
@@ -202,6 +208,7 @@ namespace win
             bool read( T& out, uint64_t address ) const
             {
                 if ( rmemcpy ) return rmemcpy( context, &out, address, sizeof( T ) );
+                if ( !address ) return false;
                 memcpy( &out, ( const void* ) address, sizeof( T ) );
                 return true;
             }
@@ -209,6 +216,7 @@ namespace win
             bool write( uint64_t address, const T& data ) const
             {
                 if ( wmemcpy ) return wmemcpy( context, address, &data, sizeof( T ) );
+                if ( !address ) return false;
                 memcpy( ( void* ) address, &data, sizeof( T ) );
                 return true;
             }
@@ -216,6 +224,7 @@ namespace win
         //bool rewind( const state_t& state ) const = 0;
         //bool unwind( const state_t& state ) const = 0;
     };
+    using amd64_unwind_state_t = amd64_unwind_code_t::state_t;
     struct amd64_unwind_set_frame_t : amd64_unwind_code_t
     {
         // Implement the interface.
@@ -239,9 +248,9 @@ namespace win
         size_t get_allocation_size() const 
         {  
             if ( unwind_op == unwind_opcode::alloc_small )
-                return op_info * 8 + 8;
+                return uint64_t( op_info ) * 8 + 8;
             if ( op_info ) return *( uint32_t* ) ( this + 1 );
-            else           return 8 * *( uint16_t* ) ( this + 1 );
+            else           return 8 * ( uint64_t ) *( uint16_t* ) ( this + 1 );
         }
 
         // Implement the interface.
@@ -296,7 +305,7 @@ namespace win
             if ( unwind_op == unwind_opcode::save_nonvol_far )
                 return ( int64_t ) ( *( uint32_t* ) ( this + 1 ) );
             else
-                return ( int64_t ) ( 8 * *( uint16_t* ) ( this + 1 ) );
+                return ( int64_t ) ( 8 * ( uint64_t ) *( uint16_t* ) ( this + 1 ) );
         }
         unwind_register_id get_register() const { return ( unwind_register_id ) op_info; }
 
@@ -321,7 +330,7 @@ namespace win
             if ( unwind_op == unwind_opcode::save_xmm128_far )
                 return ( int64_t ) ( *( uint32_t* ) ( this + 1 ) );
             else
-                return ( int64_t ) ( 16 * *( uint16_t* ) ( this + 1 ) );
+                return ( int64_t ) ( 16 * ( uint64_t ) *( uint16_t* ) ( this + 1 ) );
         }
         unwind_register_id get_register() const { return ( unwind_register_id ) ( size_t( unwind_register_id::amd64_xmm0 ) + op_info ); }
 
@@ -346,7 +355,7 @@ namespace win
         // Implement the interface.
         //
         size_t get_size() const { return 1; }
-        bool rewind( const state_t& state ) const
+        bool rewind( [[maybe_unused]] const state_t& state ) const
         {
             return false;
         }
@@ -366,53 +375,83 @@ namespace win
             return true;
         }
     };
-    struct amd64_unwind_call_t
-    {
-        // Implement special unwind helper.
-        //
-        bool unwind( const amd64_unwind_code_t::state_t& state ) const
-        {
-            if ( !state.read( state.ip(), state.sp() ) )
-                return false;
-            state.sp() += 8;
-            return true;
-        }
-    };
     struct amd64_unwind_nop_t : amd64_unwind_code_t
     {
         size_t get_size() const { return 1; }
-        bool rewind( const state_t& state ) const { return false; }
-        bool unwind( const state_t& state ) const { return true; }
+        bool rewind( [[maybe_unused]] const state_t& state ) const { return true; }
+        bool unwind( [[maybe_unused]] const state_t& state ) const { return true; }
     };
 
+    // Special unwind helper for unwinding after the function returns.
+    //
+    static bool amd64_unwind_call( const amd64_unwind_state_t& state )
+    {
+        // Read the return pointer.
+        //
+        if ( !state.read( state.ip(), state.sp() ) )
+            return false;
+        state.sp() += 8;
 
-    template<typename T>
+        // Basic attempt at decoding the instruction to unwind rip.
+        //
+        uint8_t call_region[ 16 ] = { 0 };
+        for ( size_t n = 0; n != 16; n++ )
+            state.read( call_region[ n ], state.ip() - n );
+
+        // call reg rel
+        if ( call_region[ 6 ] == 0xFF && ( call_region[ 7 ] & 0xF0 ) == 0x40 )
+            state.ip() -= 7;
+        if ( call_region[ 6 ] == 0xFF )
+            state.ip() -= 6;
+        // call imm
+        else if ( call_region[ 5 ] == 0xE8 )
+            state.ip() -= 5;
+        // call reg
+        else if ( call_region[ 2 ] == 0xFF && ( call_region[ 3 ] & 0xF0 ) == 0x40 )
+            state.ip() -= 3;
+        else if ( call_region[ 2 ] == 0xFF )
+            state.ip() -= 2;
+        // int
+        else if ( call_region[ 2 ] == 0xCD )
+            state.ip() -= 2;
+        else if ( call_region[ 1 ] == 0xCC )
+            state.ip() -= 1;
+        else if ( call_region[ 1 ] == 0xF1 )
+            state.ip() -= 1;
+        return true;
+    }
+
+    template<unwind_opcode op> struct amd64_unwind { using type = void; };
+    template<> struct amd64_unwind<unwind_opcode::push_nonvol>     { using type = amd64_unwind_push_t; };
+    template<> struct amd64_unwind<unwind_opcode::alloc_large>     { using type = amd64_unwind_alloc_t; };
+    template<> struct amd64_unwind<unwind_opcode::alloc_small>     { using type = amd64_unwind_alloc_t; };
+    template<> struct amd64_unwind<unwind_opcode::set_frame>       { using type = amd64_unwind_set_frame_t; };
+    template<> struct amd64_unwind<unwind_opcode::save_nonvol>     { using type = amd64_unwind_save_gp_t; };
+    template<> struct amd64_unwind<unwind_opcode::save_nonvol_far> { using type = amd64_unwind_save_gp_t; };
+    template<> struct amd64_unwind<unwind_opcode::save_xmm128>     { using type = amd64_unwind_save_xmm_t; };
+    template<> struct amd64_unwind<unwind_opcode::save_xmm128_far> { using type = amd64_unwind_save_xmm_t; };
+    template<> struct amd64_unwind<unwind_opcode::push_machframe>  { using type = amd64_unwind_iframe_t; };
+    template<> struct amd64_unwind<unwind_opcode::spare_code>      { using type = amd64_unwind_nop_t; };
+    template<> struct amd64_unwind<unwind_opcode::epilog>          { using type = amd64_unwind_nop_t; };
+    template<unwind_opcode op>
+    using amd64_unwind_t = typename amd64_unwind<op>::type;
+    
+    template<typename T, size_t I = 0>
     static bool visit_amd64_unwind( const unwind_code_t& code, T&& visitor )
     {
-        switch ( code.unwind_op )
+        using U = amd64_unwind_t<( unwind_opcode ) I>;
+
+        if constexpr ( I != ( size_t ) unwind_opcode::maximum )
         {
-            // push r64
-            case unwind_opcode::push_nonvol:     visitor( ( const amd64_unwind_push_t* ) &code );       break;
-            // sub rsp, N
-            case unwind_opcode::alloc_large:
-            case unwind_opcode::alloc_small:     visitor( ( const amd64_unwind_alloc_t* ) &code );      break;
-            // <reg> <= rsp + n
-            case unwind_opcode::set_frame:       visitor( ( const amd64_unwind_set_frame_t* ) &code );  break;
-            // mov [rsp/frame+N], gpreg
-            case unwind_opcode::save_nonvol:
-            case unwind_opcode::save_nonvol_far: visitor( ( const amd64_unwind_save_gp_t* ) &code );    break;
-            // mov?ps [rsp/frame+N], xmmreg
-            case unwind_opcode::save_xmm128:
-            case unwind_opcode::save_xmm128_far: visitor( ( const amd64_unwind_save_xmm_t* ) &code );   break;
-            // sw/hw int
-            case unwind_opcode::push_machframe:  visitor( ( const amd64_unwind_iframe_t* ) &code );     break;
-            // silently ignored in w10 2004
-            case unwind_opcode::spare_code:
-            case unwind_opcode::epilog:          visitor( ( const amd64_unwind_nop_t* ) &code );        break;
-            // invalid, raises STATUS_BAD_FUNCTION_TABLE
-            default:                             return false;
+            if ( code.unwind_op != ( unwind_opcode ) I )
+                return visit_amd64_unwind<T, I + 1>( code, std::forward<T>( visitor ) );
+            if constexpr ( !std::is_void_v<U> )
+            {
+                visitor( ( const U* ) &code );
+                return true;
+            }
         }
-        return true;
+        return false;
     }
 
     // Very commonly used language-specific data, C scope table.
@@ -510,11 +549,11 @@ namespace win
         //
         iterator lower_bound( uint32_t rva ) const
         {
-            return std::lower_bound( begin(), end(), runtime_function_t{ .rva_begin = rva }, key_compare{} );
+            return std::lower_bound( begin(), end(), runtime_function_t{ .rva_end = rva }, key_compare_end{} );
         }
         iterator upper_bound( uint32_t rva ) const
         {
-            return std::upper_bound( begin(), end(), runtime_function_t{ .rva_end = rva }, key_compare_end{} );
+            return std::upper_bound( begin(), end(), runtime_function_t{ .rva_begin = rva }, key_compare{} );
         }
         std::pair<iterator, iterator> equal_range( uint32_t rva ) const
         {
